@@ -50,6 +50,11 @@ p.add_argument('-u', '--disable-upload',
         dest='disable_upload',
         help='do not upload new files')
 
+p.add_argument('-p', '--disable-update',
+        action='store_true',
+        dest='disable_update',
+        help='do not update changed files')
+
 p.add_argument('-m', '--disable-meta',
         action='store_true',
         dest='disable_meta',
@@ -93,6 +98,8 @@ class drive_push(object):
     drive_total_size = 0
     drive_upload_size = 0
     drive_upload_count = 0
+    drive_update_size = 0
+    drive_update_count = 0
 
     local_changed_files = {}
     local_new_files = {}
@@ -169,12 +176,12 @@ class drive_push(object):
         return drive
 
     def update_progress(self):
-        total_bytes = self.local_new_size
+        total_bytes = self.local_new_size + self.local_changed_size
         status_bytes = self.drive_upload_size
-        total_count = len(self.local_new_files)
-        status_count = self.drive_upload_count
+        total_count = len(self.local_new_files) + len(self.local_changed_files)
+        status_count = self.drive_upload_count + self.drive_update_count
         total_size,unit = self.scale_bytes(total_bytes)
-        status_size,unit = self.scale_bytes(status_bytes,unit)
+        status_size,unit = self.scale_bytes(status_bytes, unit)
         progress_count = float(status_bytes) / float(total_bytes)
         progress_str = '#' * int(progress_count*10)
 
@@ -417,8 +424,6 @@ class drive_push(object):
                 file_info = drive.files().insert(
                     body=body,
                     media_body=media_body).execute()
-
-                file_id = file_info['id']
                 break
             except errors.HttpError as e:
                 logger.error('upload failed: {}'.format(e))
@@ -431,7 +436,6 @@ class drive_push(object):
         self.backoff_time = 0
         self.drive_upload_size += int(file_info['fileSize'])
         self.drive_upload_count += 1
-        self.update_progress()
 
     def drive_upload_file(self, path, drive=None):
         if not drive:
@@ -460,13 +464,12 @@ class drive_push(object):
         logger.debug("upload thread done")
 
     def drive_meta_update_file(self, path, drive=None):
-        logger.debug("updating file: " + path)
+        logger.debug("updating file meta: " + path)
         if not drive:
             drive = self.drive
 
         file_id = self.drive_paths[path]['id']
-        file_info = self.local_read_info(path)
-        date = file_info['modifiedDate']
+        date = self.local_read_info(path)['modifiedDate']
         date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         info = {'modifiedDate': date}
 
@@ -501,6 +504,54 @@ class drive_push(object):
         self.done += 1
         logger.debug("meta update thread done")
 
+    def drive_update_file(self, path, drive=None):
+        logger.debug("updating file: " + path)
+        if not drive:
+            drive = self.drive
+
+        file_id = self.drive_paths[path]['id']
+        date = self.local_read_info(path)['modifiedDate']
+        date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        path = os.path.join(self.path, path)
+        media_body = MediaFileUpload(path, resumable=True)
+
+        body = {
+                'modifiedDate': date,
+        }
+
+        while True:
+            try:
+                file_info = drive.files().update(
+                    fileId=file_id,
+                    body=body,
+                    media_body=media_body).execute()
+                break
+            except errors.HttpError as e:
+                logger.error('upload failed: {}'.format(e))
+                time.sleep(self.backoff_time)
+                self.backoff_time *= 2
+            except (socket.error, BadStatusLine) as e:
+                logger.debug("upload interrupted {}".format(e))
+                return
+
+        self.backoff_time = 0
+        self.drive_update_size += int(file_info['fileSize'])
+        self.drive_update_count += 1
+
+    def drive_update_files(self, file_list=None, drive=None):
+        logger.info("updating changed files")
+        if not file_list:
+            file_list = self.local_changed_files
+
+        if not drive:
+            drive = self.drive
+
+        for path in file_list:
+            self.drive_update_file(path, drive)
+
+        self.done += 1
+        logger.debug("update thread done")
+
     def kill_threads(self):
         self.stop = True
         logger.info('closing sockets')
@@ -516,6 +567,15 @@ class drive_push(object):
         drive = self.create_drive(http)
         l = self.local_meta_files
         t = threading.Thread(target=self.drive_meta_update_files, args=[l, drive])
+        t.start()
+        self.threads += 1
+
+    def start_update_thread(self):
+        http = self.authorize()
+        self.https.append(http)
+        drive = self.create_drive(http)
+        l = self.local_changed_files
+        t = threading.Thread(target=self.drive_update_files, args=[l, drive])
         t.start()
         self.threads += 1
 
@@ -559,6 +619,9 @@ if __name__ == "__main__":
 
         if not args.disable_meta:
             d.start_meta_update_thread()
+
+        if not args.disable_update:
+            d.start_update_thread()
 
         if not args.disable_upload:
             d.drive_create_paths()
