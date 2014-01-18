@@ -162,6 +162,32 @@ class drive_push(object):
         sys.stdout.write(string)
         sys.stdout.flush()
 
+    def print_summary(self):
+        count = len(self.local_missing_files)
+        size,unit = self.scale_bytes(self.local_missing_size)
+        logger.info('files missing: {} ({} {})'.format(count, size, unit))
+
+        count = len(self.local_changed_files)
+        size,unit = self.scale_bytes(self.local_changed_size)
+        logger.info('files changed: {} ({} {})'.format(count, size, unit))
+
+        count = len(self.local_unchanged_files)
+        size,unit = self.scale_bytes(self.local_unchanged_size)
+        logger.info('files unchanged: {} ({} {})'.format(count, size, unit))
+
+    def scale_bytes(self, bytes_, fixed=None):
+        for s,u in ((30,'GB'), (20,'MB'), (10,'kB'), (0,'B')):
+            r = bytes_ >> s
+            if not r and fixed != u:
+                continue
+
+            if s:
+                r += (bytes_ - (r << s) >> (s - 10))/1024.0
+
+            return round(r, 2),u
+
+        return 0,'B'
+
     def drive_get_files(self):
         page_token = None
 
@@ -252,18 +278,6 @@ class drive_push(object):
         self.local_missing_files = sorted(self.local_missing_files)
         self.local_changed_files = sorted(self.local_changed_files)
 
-        count = len(self.local_missing_files)
-        size,unit = self.scale_bytes(self.local_missing_size)
-        logger.info('files missing: {} ({} {})'.format(count, size, unit))
-
-        count = len(self.local_changed_files)
-        size,unit = self.scale_bytes(self.local_changed_size)
-        logger.info('files changed: {} ({} {})'.format(count, size, unit))
-
-        count = len(self.local_unchanged_files)
-        size,unit = self.scale_bytes(self.local_unchanged_size)
-        logger.info('files unchanged: {} ({} {})'.format(count, size, unit))
-
     def local_read_info(self, path):
         path = os.path.join(self.path, path)
         stats = os.stat(path)
@@ -294,19 +308,6 @@ class drive_push(object):
 
         return False
 
-    def scale_bytes(self, bytes_, fixed=None):
-        for s,u in ((30,'GB'), (20,'MB'), (10,'kB'), (0,'B')):
-            r = bytes_ >> s
-            if not r and fixed != u:
-                continue
-
-            if s:
-                r += (bytes_ - (r << s) >> (s - 10))/1024.0
-
-            return round(r, 2),u
-
-        return 0,'B'
-
     def drive_create_folder(self, folder_name, parent_id = None):
         logger.debug('creating folder: ' + folder_name)
         body = {
@@ -321,6 +322,20 @@ class drive_push(object):
         self.drive_folders[folder_name] = new_folder
 
         return new_folder['id']
+
+    def drive_create_path(self, path):
+        folders,filename = os.path.split(path)
+        parent_id = None
+
+        for folder in folders.split(os.sep):
+            if folder not in self.drive_folders:
+                parent_id = self.drive_create_folder(folder, parent_id)
+            else:
+                parent_id = self.drive_folders[folder]['id']
+
+    def drive_create_paths(self):
+        for path in self.local_missing_files:
+            self.drive_create_path(path)
 
     def drive_create_file(self, path, parent_id, drive=None):
         if not drive:
@@ -357,16 +372,6 @@ class drive_push(object):
         self.drive_upload_count += 1
         self.update_progress()
 
-    def drive_create_path(self, path):
-        folders,filename = os.path.split(path)
-        parent_id = None
-
-        for folder in folders.split(os.sep):
-            if folder not in self.drive_folders:
-                parent_id = self.drive_create_folder(folder, parent_id)
-            else:
-                parent_id = self.drive_folders[folder]['id']
-
     def drive_upload_file(self, path, drive=None):
         if not drive:
             drive = self.drive
@@ -376,10 +381,6 @@ class drive_push(object):
         folder_id = folder_info['id']
 
         self.drive_create_file(path, folder_id, drive)
-
-    def drive_create_paths(self):
-        for path in self.local_missing_files:
-            self.drive_create_path(path)
 
     def drive_upload_files(self, file_list=None, drive=None):
         if not file_list:
@@ -396,7 +397,7 @@ class drive_push(object):
         self.done += 1
         logger.debug("thread done")
 
-    def kill_https(self):
+    def kill_threads(self):
         self.stop = True
         logger.info('closing sockets')
         for http in self.https:
@@ -405,7 +406,7 @@ class drive_push(object):
                     conn.sock.shutdown(socket.SHUT_WR)
                     conn.sock.close()
 
-    def drive_start_threads(self):
+    def start_threads(self):
         n = self.threads
         self.https = []
         for i in range(n):
@@ -436,12 +437,13 @@ if __name__ == "__main__":
         d.drive_get_files()
         d.drive_build_tree()
         d.local_get_files()
+        d.print_summary()
 
         if args.resolve:
             sys.exit(0)
 
         d.drive_create_paths()
-        d.drive_start_threads()
+        d.start_threads()
     except KeyboardInterrupt:
         logger.info("interrupted")
-        d.kill_https()
+        d.kill_threads()
