@@ -256,11 +256,20 @@ class drive_push(object):
             self.drive_index[file_info['id']] = file_info
 
         for file_info in self.drive_items:
+            title = file_info['title']
+
             if file_info['mimeType'] == 'application/vnd.google-apps.folder':
-                self.drive_folders[file_info['title']] = file_info
+                if title in self.drive_folders:
+                    logger.warning('duplicate folder name: ' + title)
+
+                self.drive_folders[title] = file_info
                 continue
 
             path = self.drive_recurse_tree(file_info)
+
+            if path in self.drive_paths:
+                logger.warning('duplicate file path: ' + path)
+
             self.drive_paths[path] = file_info
             self.drive_total_size += int(file_info.get('fileSize', 0))
             logger.debug("drive file: " + path)
