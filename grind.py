@@ -43,7 +43,17 @@ p.add_argument('-c', '--credentials',
 p.add_argument('-r', '--resolve-only',
         action='store_true',
         dest='resolve',
-        help='do not upload anything')
+        help='do not upload/update anything')
+
+p.add_argument('-u', '--disable-upload',
+        action='store_true',
+        dest='disable_upload',
+        help='do not upload new files')
+
+p.add_argument('-m', '--disable-meta',
+        action='store_true',
+        dest='disable_meta',
+        help='do not update changed meta data')
 
 p.add_argument('-t', '--threads',
         type=int,
@@ -165,11 +175,11 @@ class drive_push(object):
         status_count = self.drive_upload_count
         total_size,unit = self.scale_bytes(total_bytes)
         status_size,unit = self.scale_bytes(status_bytes,unit)
-        progress_count = status_bytes / total_bytes
+        progress_count = float(status_bytes) / float(total_bytes)
         progress_str = '#' * int(progress_count*10)
 
         progress_string = ' [{0:10}] {1:>2}%'
-        string = progress_string.format(progress_str, progress_count)
+        string = progress_string.format(progress_str, round(progress_count, 2))
         string += " {}/{} files".format(status_count, total_count)
         string += " {}/{} {}".format(status_size, total_size, unit)
         string += "\r"
@@ -447,7 +457,49 @@ class drive_push(object):
                 break
 
         self.done += 1
-        logger.debug("thread done")
+        logger.debug("upload thread done")
+
+    def drive_meta_update_file(self, path, drive=None):
+        logger.debug("updating file: " + path)
+        if not drive:
+            drive = self.drive
+
+        file_id = self.drive_paths[path]['id']
+        file_info = self.local_read_info(path)
+        date = file_info['modifiedDate']
+        date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        info = {'modifiedDate': date}
+
+        while True:
+            try:
+                # Rename the file.
+                updated_file = drive.files().patch(
+                    fileId=file_id,
+                    body=info,
+                    setModifiedDate=True,
+                    fields='modifiedDate').execute()
+                break
+            except errors.HttpError as e:
+                logger.error('update failed: {}'.format(e))
+                time.sleep(self.backoff_time)
+                self.backoff_time *= 2
+            except (socket.error, BadStatusLine) as e:
+                logger.debug("update interrupted {}".format(e))
+                return
+
+    def drive_meta_update_files(self, file_list=None, drive=None):
+        logger.info("updating meta changed files")
+        if not file_list:
+            file_list = self.local_meta_files
+
+        if not drive:
+            drive = self.drive
+
+        for path in file_list:
+            self.drive_meta_update_file(path, drive)
+
+        self.done += 1
+        logger.debug("meta update thread done")
 
     def kill_threads(self):
         self.stop = True
@@ -458,9 +510,19 @@ class drive_push(object):
                     conn.sock.shutdown(socket.SHUT_WR)
                     conn.sock.close()
 
-    def start_threads(self):
+    def start_meta_update_thread(self):
+        http = self.authorize()
+        self.https.append(http)
+        drive = self.create_drive(http)
+        l = self.local_meta_files
+        t = threading.Thread(target=self.drive_meta_update_files, args=[l, drive])
+        t.start()
+        self.threads += 1
+
+    def start_upload_threads(self):
         n = self.threads
         self.https = []
+
         for i in range(n):
             http = self.authorize()
             self.https.append(http)
@@ -469,8 +531,9 @@ class drive_push(object):
             l = self.local_new_files[i::n]
             t = threading.Thread(target=self.drive_upload_files, args=[l, drive])
             t.start()
+            self.threads += 1
 
-        while self.done < n:
+        while self.done < self.threads:
             time.sleep(1)
             self.update_progress()
         logger.debug("main done")
@@ -494,8 +557,12 @@ if __name__ == "__main__":
         if args.resolve:
             sys.exit(0)
 
-        d.drive_create_paths()
-        d.start_threads()
+        if not args.disable_meta:
+            d.start_meta_update_thread()
+
+        if not args.disable_upload:
+            d.drive_create_paths()
+            d.start_upload_threads()
     except KeyboardInterrupt:
         logger.info("interrupted")
         d.kill_threads()
