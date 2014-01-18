@@ -445,7 +445,7 @@ class drive_push(object):
         logger.info('closing sockets')
         for http in self.https:
             for conn in http.connections.values():
-                if hasattr(conn, 'sock'):
+                if hasattr(conn, 'sock') and conn.sock:
                     conn.sock.shutdown(socket.SHUT_WR)
                     conn.sock.close()
 
