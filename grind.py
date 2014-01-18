@@ -390,6 +390,9 @@ class drive_push(object):
         folders,filename = os.path.split(path)
         parent_id = None
 
+        if not folders:
+            return
+
         for folder in folders.split(os.sep):
             if folder not in self.drive_folders:
                 parent_id = self.drive_create_folder(folder, parent_id)
@@ -441,9 +444,13 @@ class drive_push(object):
         if not drive:
             drive = self.drive
         folder_path,file_name = os.path.split(path)
-        folder_parent = os.path.basename(folder_path)
-        folder_info = self.drive_folders[folder_parent]
-        folder_id = folder_info['id']
+
+        if folder_path:
+            folder_parent = os.path.basename(folder_path)
+            folder_info = self.drive_folders[folder_parent]
+            folder_id = folder_info['id']
+        else:
+            folder_id = None
 
         self.drive_create_file(path, folder_id, drive)
 
