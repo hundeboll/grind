@@ -1,10 +1,11 @@
 #!/usr/bin/env python2
 
-from oauth2client.client import OAuth2WebServerFlow, FlowExchangeError
+from oauth2client.client import OAuth2WebServerFlow, FlowExchangeError, OAuth2Credentials
 from apiclient.discovery import build
 from apiclient.http import MediaFileUpload
 from apiclient import errors
 from httplib import BadStatusLine
+from os.path import expanduser
 import dateutil.parser
 import threading
 import datetime
@@ -12,7 +13,6 @@ import argparse
 import httplib2
 import logging
 import socket
-import pickle
 import time
 import pytz
 import sys
@@ -36,7 +36,7 @@ p.add_argument('-d', '--debug',
 
 p.add_argument('-c', '--credentials',
         type=str,
-        default='credentials.pickle',
+        default=expanduser('~') + '/.grind/creds.json',
         help='path to credentials file')
 
 p.add_argument('-r', '--resolve-only',
@@ -96,7 +96,7 @@ class drive_push(object):
         self.path = args.path + '/'
         self.threads = args.threads
 
-        if os.path.exists(self.cred_path):
+        if os.path.isfile(self.cred_path):
             self.authenticate_saved()
         else:
             self.authenticate_new()
@@ -122,10 +122,23 @@ class drive_push(object):
             logger.error("unable to authenticate: " + e.message)
             sys.exit(1)
 
-        pickle.dump(self.credentials, open(self.cred_path, 'wb'))
+        cred_folder = os.path.dirname(self.cred_path)
+        if not os.path.exists(cred_folder):
+            os.makedirs(cred_folder)
+
+        json = self.credentials.to_json()
+        f = open(self.cred_path, 'wb')
+        f.write(json)
+        f.close()
 
     def authenticate_saved(self):
-        self.credentials = pickle.load(open(self.cred_path, 'rb'))
+        try:
+            f = open(self.cred_path, 'rb')
+            json = f.read()
+            self.credentials = OAuth2Credentials.from_json(json)
+        except ValueError as e:
+            logger.error('unable to load credentials: {}'.format(e))
+            self.authenticate_new()
 
     def authorize(self):
         http = httplib2.Http()
