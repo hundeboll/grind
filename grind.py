@@ -11,6 +11,7 @@ import threading
 import datetime
 import argparse
 import httplib2
+import hashlib
 import logging
 import socket
 import time
@@ -85,6 +86,7 @@ class drive_push(object):
 
     local_changed_files = {}
     local_new_files = {}
+    local_meta_files = {}
     local_total_size = 0
     local_changed_size = 0
     local_new_size = 0
@@ -159,7 +161,7 @@ class drive_push(object):
     def update_progress(self):
         total_bytes = self.local_new_size
         status_bytes = self.drive_upload_size
-        total_count = len(self.local_unchanged_files)
+        total_count = len(self.local_new_files)
         status_count = self.drive_upload_count
         total_size,unit = self.scale_bytes(total_bytes)
         status_size,unit = self.scale_bytes(status_bytes,unit)
@@ -184,6 +186,9 @@ class drive_push(object):
         size,unit = self.scale_bytes(self.local_changed_size)
         logger.info('files changed: {} ({} {})'.format(count, size, unit))
 
+        count = len(self.local_meta_files)
+        logger.info('files meta changed: {}'.format(count))
+
         count = len(self.local_unchanged_files)
         size,unit = self.scale_bytes(self.local_unchanged_size)
         logger.info('files unchanged: {} ({} {})'.format(count, size, unit))
@@ -200,6 +205,21 @@ class drive_push(object):
             return round(r, 2),u
 
         return 0,'B'
+
+    def local_md5sum(self, path, block_size=2**20):
+        md5 = hashlib.md5()
+        path = os.path.join(self.path, path)
+        f = open(path, 'rb')
+
+        while True:
+            data = f.read(block_size)
+
+            if not data:
+                break
+
+            md5.update(data)
+
+        return md5.hexdigest()
 
     def drive_get_files(self):
         page_token = None
@@ -279,10 +299,13 @@ class drive_push(object):
                     logger.debug("local new: " + path)
                     self.local_new_files[path] = info
                     self.local_new_size += info['fileSize']
-                elif self.local_file_is_changed(path, info):
+                elif self.local_file_is_changed(path, info, checksum=True):
                     logger.debug("local changed: " + path)
                     self.local_changed_files[path] = info
                     self.local_changed_size += info['fileSize']
+                elif self.local_file_is_changed(path, info, checksum=False):
+                    logger.debug("local meta changed: " + path)
+                    self.local_meta_files[path] = info
                 else:
                     logger.debug("local unchanged: " + path)
                     self.local_unchanged_files[path] = info
@@ -296,27 +319,28 @@ class drive_push(object):
         stats = os.stat(path)
         date = datetime.datetime.fromtimestamp(stats.st_ctime)
         date = date.replace(tzinfo=pytz.UTC)
+        us = date.microsecond
+        date = date.replace(microsecond=(us - (us % 1000)))
 
         return {'fileSize': stats.st_size,
                 'modifiedDate': date}
 
-    def local_file_is_changed(self, path, local_info):
+    def local_file_is_changed(self, path, local_info, checksum=False):
         if path not in self.drive_paths:
             return True
 
         drive_info = self.drive_paths[path]
         drive_date = dateutil.parser.parse(drive_info['modifiedDate'])
         drive_size = int(drive_info['fileSize'])
+        drive_md5 = drive_info['md5Checksum']
 
         local_date = local_info['modifiedDate']
         local_size = local_info['fileSize']
 
-        if local_date > drive_date:
-            logger.debug('changed: {} > {}'.format(local_date, drive_date))
-            return True
+        if (local_date != drive_date or local_size != drive_size) and checksum:
+            return drive_md5 != self.local_md5sum(path)
 
-        if local_size != drive_size:
-            logger.debug('changed: ' + local_size + ' != ' + local_size)
+        if (local_date != drive_date or local_size != drive_size) and not checksum:
             return True
 
         return False
@@ -347,6 +371,7 @@ class drive_push(object):
                 parent_id = self.drive_folders[folder]['id']
 
     def drive_create_paths(self):
+        logger.info("creating directories")
         for path in self.local_new_files:
             self.drive_create_path(path)
 
@@ -355,11 +380,14 @@ class drive_push(object):
             drive = self.drive
 
         logger.debug('creating file: ' + path)
+        date = self.local_read_info(path)['modifiedDate']
+        date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         path = os.path.join(self.path, path)
         media_body = MediaFileUpload(path, resumable=True)
 
         body = {
                 'title': os.path.basename(path),
+                'modifiedDate': date,
         }
 
         if parent_id:
@@ -397,6 +425,7 @@ class drive_push(object):
         self.drive_create_file(path, folder_id, drive)
 
     def drive_upload_files(self, file_list=None, drive=None):
+        logger.info("uploading new files")
         if not file_list:
             file_list = self.local_new_files
 
