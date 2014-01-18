@@ -186,7 +186,7 @@ class drive_push(object):
         progress_str = '#' * int(progress_count*10)
 
         progress_string = ' [{0:10}] {1:>2}%'
-        string = progress_string.format(progress_str, round(progress_count, 2))
+        string = progress_string.format(progress_str, round(progress_count*100, 2))
         string += " {}/{} files".format(status_count, total_count)
         string += " {}/{} {}".format(status_size, total_size, unit)
         string += "\r"
