@@ -377,7 +377,8 @@ class drive_push(object):
                 logger.error('upload failed: {}'.format(e))
                 time.sleep(self.backoff_time)
                 self.backoff_time *= 2
-            except (socket.error, BadStatusLine):
+            except (socket.error, BadStatusLine) as e:
+                logger.debug("upload interrupted {}".format(e))
                 return
 
         self.backoff_time = 0
