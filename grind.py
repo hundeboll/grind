@@ -55,10 +55,6 @@ formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)s: %(message)s')
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-def grouper(iterable, n, fillvalue=None):
-    args = [iter(iterable)] * n
-    return izip_longest(*args, fillvalue=fillvalue)
-
 class drive_push(object):
     fields = ['createdDate',
               'downloadUrl',
