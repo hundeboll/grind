@@ -18,7 +18,7 @@ import pytz
 import sys
 import os
 
-p = argparse.ArgumentParser(description='Upload missing files to Google Drive')
+p = argparse.ArgumentParser(description='Upload new files to Google Drive')
 
 p.add_argument('path',
         type=unicode,
@@ -84,10 +84,10 @@ class drive_push(object):
     drive_upload_count = 0
 
     local_changed_files = {}
-    local_missing_files = {}
+    local_new_files = {}
     local_total_size = 0
     local_changed_size = 0
-    local_missing_size = 0
+    local_new_size = 0
     local_unchanged_files = {}
     local_unchanged_size = 0
 
@@ -157,7 +157,7 @@ class drive_push(object):
         return drive
 
     def update_progress(self):
-        total_bytes = self.local_missing_size
+        total_bytes = self.local_new_size
         status_bytes = self.drive_upload_size
         total_count = len(self.local_unchanged_files)
         status_count = self.drive_upload_count
@@ -176,9 +176,9 @@ class drive_push(object):
         sys.stdout.flush()
 
     def print_summary(self):
-        count = len(self.local_missing_files)
-        size,unit = self.scale_bytes(self.local_missing_size)
-        logger.info('files missing: {} ({} {})'.format(count, size, unit))
+        count = len(self.local_new_files)
+        size,unit = self.scale_bytes(self.local_new_size)
+        logger.info('files new: {} ({} {})'.format(count, size, unit))
 
         count = len(self.local_changed_files)
         size,unit = self.scale_bytes(self.local_changed_size)
@@ -276,9 +276,9 @@ class drive_push(object):
                 self.local_total_size += info['fileSize']
 
                 if path not in self.drive_paths:
-                    logger.debug("local missing: " + path)
-                    self.local_missing_files[path] = info
-                    self.local_missing_size += info['fileSize']
+                    logger.debug("local new: " + path)
+                    self.local_new_files[path] = info
+                    self.local_new_size += info['fileSize']
                 elif self.local_file_is_changed(path, info):
                     logger.debug("local changed: " + path)
                     self.local_changed_files[path] = info
@@ -288,7 +288,7 @@ class drive_push(object):
                     self.local_unchanged_files[path] = info
                     self.local_unchanged_size += info['fileSize']
 
-        self.local_missing_files = sorted(self.local_missing_files)
+        self.local_new_files = sorted(self.local_new_files)
         self.local_changed_files = sorted(self.local_changed_files)
 
     def local_read_info(self, path):
@@ -347,7 +347,7 @@ class drive_push(object):
                 parent_id = self.drive_folders[folder]['id']
 
     def drive_create_paths(self):
-        for path in self.local_missing_files:
+        for path in self.local_new_files:
             self.drive_create_path(path)
 
     def drive_create_file(self, path, parent_id, drive=None):
@@ -397,7 +397,7 @@ class drive_push(object):
 
     def drive_upload_files(self, file_list=None, drive=None):
         if not file_list:
-            file_list = self.local_missing_files
+            file_list = self.local_new_files
 
         if not drive:
             drive = self.drive
@@ -427,7 +427,7 @@ class drive_push(object):
             self.https.append(http)
             drive = self.create_drive(http)
 
-            l = self.local_missing_files[i::n]
+            l = self.local_new_files[i::n]
             t = threading.Thread(target=self.drive_upload_files, args=[l, drive])
             t.start()
 
