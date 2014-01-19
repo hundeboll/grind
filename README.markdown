@@ -1,4 +1,4 @@
-`grind` - A Simple Client for Google Drive
+`grind` - A Client for Google Drive
 =========================================
 
 `grind` is yet another client for Google Drive. It is written in python as a reaction to missing features and bugs of the currently existing alternatives. It is primarily meant to satisfy the needs of the author, but ideas, suggestions, bug reports, and patches are always welcome.
@@ -30,7 +30,7 @@ So far it is only possible to push a folder and its contents to drive. It is pla
 Dependencies
 ------------
 
-`grive`is written in python, and since the Google API Client only supports python2, so does `grive`. It uses the following non-standard python modules:
+`grind`is written in python, and since the Google API Client only supports python2, so does `grive`. It uses the following non-standard python modules:
 
 * google-api-python-client - for handling all the nasty http stuff
 * oauth2client - for signing in on Google Drive
@@ -40,20 +40,20 @@ Dependencies
 Usage
 -----
 
-To simply synchronize the current folder, start `grive` with no arguments. You can specify the folder to synchronize as the last argument:
+To simply synchronize the current folder, start `grind` with no arguments. You can specify the folder to synchronize as the last argument:
 
 ```
-$ python grive.py ~/Drive
+$ python grind.py ~/Drive
 
 [#         ] 17.08% 476/1308 files 4.52/26.49 GB
 ```
 
-At first `grive` will ask you to open a URL and allow `grive` to access your Drive account. It will then download a list of files and compare this to your local folder and then start uploading any files that are missing in Drive. The first steps might take a while depending on the number of files in Drive.
+At first `grind` will ask you to open a URL and allow `grive` to access your Drive account. It will then download a list of files and compare this to your local folder and then start uploading any files that are missing in Drive. The first steps might take a while depending on the number of files in Drive.
 
-To follow the process, start `grive` with the verbose flag:
+To follow the process, start `grind` with the verbose flag:
 
 ```
-$ python grive.py --verbose ~/Drive
+$ python grind.py --verbose ~/Drive
 
 2014-01-19 10:05:33,283 ./grind.py INFO: resolving drive files (0 files received)
 2014-01-19 10:05:43,914 ./grind.py INFO: resolving drive files (1000 files received)
@@ -75,10 +75,10 @@ $ python grive.py --verbose ~/Drive
 
 This prints out the process of downloading the file list from Drive, and gives you a report on the work needed to be done. There is also a debug flag available, which will spam you with files and folders :)
 
-If you only want to know what `grive` intends to do, run it with the resolve-only flag:
+If you only want to know what `grind` intends to do, run it with the resolve-only flag:
 
 ```
-$ python grive.py --verbose --resolve-only ~/Drive
+$ python grind.py --verbose --resolve-only ~/Drive
 
 2014-01-19 10:05:33,283 ./grind.py INFO: resolving drive files (0 files received)
 2014-01-19 10:05:43,914 ./grind.py INFO: resolving drive files (1000 files received)
@@ -94,10 +94,10 @@ $ python grive.py --verbose --resolve-only ~/Drive
 $
 ```
 
-One of the main features of `grive` is the ability to do simultaneous uploads. To enable this, use the threads flag:
+One of the main features of `grind` is the ability to do simultaneous uploads. To enable this, use the threads flag:
 
 ```
-$ python grive.py --verbose --threads 5 ~/Drive
+$ python grind.py --verbose --threads 5 ~/Drive
 
 2014-01-19 10:05:33,283 ./grind.py INFO: resolving drive files (0 files received)
 2014-01-19 10:05:43,914 ./grind.py INFO: resolving drive files (1000 files received)
@@ -123,7 +123,7 @@ $ python grive.py --verbose --threads 5 ~/Drive
 
 Notice the repeated number of uploading-messages in the end - one for each thread.
 
-To see more options, run `grive` with the help flag:
+To see more options, run `grind` with the help flag:
 
 ```
 $ python grind.py --help
