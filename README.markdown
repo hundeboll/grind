@@ -50,6 +50,8 @@ $ python grind.py ~/Drive
 
 At first `grind` will ask you to open a URL and allow `grive` to access your Drive account. It will then download a list of files and compare this to your local folder and then start uploading any files that are missing in Drive. The first steps might take a while depending on the number of files in Drive.
 
+### Verbose
+
 To follow the process, start `grind` with the verbose flag:
 
 ```
@@ -75,6 +77,8 @@ $ python grind.py --verbose ~/Drive
 
 This prints out the process of downloading the file list from Drive, and gives you a report on the work needed to be done. There is also a debug flag available, which will spam you with files and folders :)
 
+### Resolve Only
+
 If you only want to know what `grind` intends to do, run it with the resolve-only flag:
 
 ```
@@ -93,6 +97,8 @@ $ python grind.py --verbose --resolve-only ~/Drive
 
 $
 ```
+
+### Threads
 
 One of the main features of `grind` is the ability to do simultaneous uploads. To enable this, use the threads flag:
 
@@ -122,6 +128,8 @@ $ python grind.py --verbose --threads 5 ~/Drive
 ```
 
 Notice the repeated number of uploading-messages in the end - one for each thread.
+
+### Help
 
 To see more options, run `grind` with the help flag:
 
