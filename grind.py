@@ -88,8 +88,9 @@ class drive_push(object):
 
     backoff_time = 1
     stop = False
-    done = 0
     https = []
+    threads_running = 0
+    threads_done = 0
 
     drive_index = {}
     drive_paths = {}
@@ -467,7 +468,7 @@ class drive_push(object):
             if self.stop:
                 break
 
-        self.done += 1
+        self.threads_done += 1
         logger.debug("upload thread done")
 
     def drive_meta_update_file(self, path, drive=None):
@@ -508,7 +509,7 @@ class drive_push(object):
         for path in file_list:
             self.drive_meta_update_file(path, drive)
 
-        self.done += 1
+        self.threads_done += 1
         logger.debug("meta update thread done")
 
     def drive_update_file(self, path, drive=None):
@@ -556,7 +557,7 @@ class drive_push(object):
         for path in file_list:
             self.drive_update_file(path, drive)
 
-        self.done += 1
+        self.threads_done += 1
         logger.debug("update thread done")
 
     def kill_threads(self):
@@ -575,7 +576,7 @@ class drive_push(object):
         l = self.local_meta_files
         t = threading.Thread(target=self.drive_meta_update_files, args=[l, drive])
         t.start()
-        self.threads += 1
+        self.threads_running += 1
 
     def start_update_thread(self):
         http = self.authorize()
@@ -584,7 +585,7 @@ class drive_push(object):
         l = self.local_changed_files
         t = threading.Thread(target=self.drive_update_files, args=[l, drive])
         t.start()
-        self.threads += 1
+        self.threads_running += 1
 
     def start_upload_threads(self):
         n = self.threads
@@ -598,9 +599,9 @@ class drive_push(object):
             l = self.local_new_files[i::n]
             t = threading.Thread(target=self.drive_upload_files, args=[l, drive])
             t.start()
-            self.threads += 1
+            self.threads_running += 1
 
-        while self.done < self.threads:
+        while self.threads_done < self.threads_running:
             time.sleep(1)
             self.update_progress()
         logger.debug("main done")
