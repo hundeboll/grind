@@ -98,6 +98,47 @@ formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)s: %(message)s')
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
+class remote_file(object):
+    def __init__(self, info):
+        self.info = info
+        self.path = None
+
+    @property
+    def id(self):
+        return self.info['id']
+
+    @property
+    def title(self):
+        return self.info['title']
+
+    @property
+    def size(self):
+        return int(self.info.get('fileSize', 0))
+
+    @property
+    def md5sum(self):
+        return self.info['md5Checksum']
+
+    @property
+    def parent_id(self):
+        return self.info['parents'][0]['id']
+
+    @property
+    def is_folder(self):
+        return self.info['mimeType'] == 'application/vnd.google-apps.folder'
+
+    @property
+    def has_parents(self):
+        return len(self.info['parents']) > 0
+
+    @property
+    def is_root(self):
+        return self.info['parents'][0]['isRoot']
+
+    @property
+    def modified_date(self):
+        return dateutil.parser.parse(self.info['modifiedDate'])
+
 class remote(object):
     backoff_time = 1
     file_index = {}
@@ -202,8 +243,9 @@ class remote(object):
                     param['pageToken'] = page_token
 
                 files = self.drive.files().list(**param).execute()
+                file_list = [remote_file(item) for item in files['items']]
 
-                self.file_items.extend(files['items'])
+                self.file_items.extend(file_list)
                 page_token = files.get('nextPageToken')
                 self.backoff_time = 1
 
@@ -219,41 +261,40 @@ class remote(object):
     def build_tree(self):
         logger.info('building drive tree')
 
-        for file_info in self.file_items:
-            self.file_index[file_info['id']] = file_info
+        for info in self.file_items:
+            self.file_index[info.id] = info
 
-        for file_info in self.file_items:
-            title = file_info['title']
-
-            if file_info['mimeType'] == 'application/vnd.google-apps.folder':
-                if title in self.folder_index:
+        for info in self.file_items:
+            if info.is_folder:
+                if info.title in self.folder_index:
                     logger.warning('duplicate folder name: ' + title)
 
-                self.folder_index[title] = file_info
+                self.folder_index[info.title] = info
                 continue
 
-            path = self.recurse_tree(file_info)
+            path = self.recurse_tree(info)
 
             if path in self.file_paths:
                 logger.warning('duplicate file path: ' + path)
 
-            self.file_paths[path] = file_info
-            self.total_size += int(file_info.get('fileSize', 0))
+            info.path = path
+            self.file_paths[path] = info
+            self.total_size += info.size
             logger.debug("drive file: " + path)
 
-    def recurse_tree(self, file_info, path = None):
+    def recurse_tree(self, info, path = None):
         if path:
-            path = os.path.join(file_info['title'], path)
+            path = os.path.join(info.title, path)
         else:
-            path = file_info['title']
+            path = info.title
 
-        if len(file_info['parents']) == 0:
+        if not info.has_parents:
             return path
 
-        if file_info['parents'][0]['isRoot']:
+        if info.is_root:
             return path
 
-        parent_id = file_info['parents'][0]['id']
+        parent_id = info.parent_id
         parent = self.file_index[parent_id]
 
         return self.recurse_tree(parent, path)
@@ -314,7 +355,7 @@ class remote(object):
         if not drive:
             drive = self.drive
 
-        file_id = self.file_paths[path]['id']
+        file_id = self.file_paths[path].id
         date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         path = os.path.join(self.path, path)
         media_body = MediaFileUpload(path, resumable=True)
@@ -347,7 +388,7 @@ class remote(object):
         if not drive:
             drive = self.drive
 
-        file_id = self.file_paths[path]['id']
+        file_id = self.file_paths[path].id
         date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         info = {'modifiedDate': date}
 
@@ -521,18 +562,15 @@ class grind(object):
         if path not in self.remote.file_paths:
             return True
 
-        drive_info = self.remote.file_paths[path]
-        drive_date = dateutil.parser.parse(drive_info['modifiedDate'])
-        drive_size = int(drive_info['fileSize'])
-        drive_md5 = drive_info['md5Checksum']
+        remote_info = self.remote.file_paths[path]
 
         local_date = local_info['modifiedDate']
         local_size = local_info['fileSize']
 
-        if (local_date != drive_date or local_size != drive_size) and checksum:
-            return drive_md5 != self.local.md5sum(path)
+        if (local_date != remote_info.modified_date or local_size != remote_info.size) and checksum:
+            return remote_info.md5sum != self.local.md5sum(path)
 
-        if (local_date != drive_date or local_size != drive_size) and not checksum:
+        if (local_date != remote_info.modified_date or local_size != remote_info.size) and not checksum:
             return True
 
         return False
@@ -548,7 +586,7 @@ class grind(object):
             if folder not in self.remote.folder_index:
                 parent_id = self.remote.create_folder(folder, parent_id)
             else:
-                parent_id = self.remote.folder_index[folder]['id']
+                parent_id = self.remote.folder_index[folder].id
 
     def drive_create_paths(self):
         logger.info("creating directories")
