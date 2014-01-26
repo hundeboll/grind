@@ -36,6 +36,7 @@ Dependencies
 * oauth2client - for signing in on Google Drive
 * httplib2 - for doing http requests/responses with Google API Client
 * pytz - for timezone support
+* magic - for better mime type detection
 
 Usage
 -----

@@ -40,6 +40,7 @@ import httplib2
 import hashlib
 import logging
 import socket
+import magic
 import time
 import pytz
 import sys
@@ -272,18 +273,19 @@ class remote(object):
 
         return new_folder['id']
 
-    def create_file(self, path, parent_id, date, drive=None):
+    def create_file(self, path, parent_id, date, mime, drive=None):
         if not drive:
             drive = self.drive
 
         logger.debug('creating file: ' + path)
         date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         path = os.path.join(self.path, path)
-        media_body = MediaFileUpload(path, resumable=True)
+        media_body = MediaFileUpload(path, mimetype=mime, resumable=True)
 
         body = {
                 'title': os.path.basename(path),
                 'modifiedDate': date,
+                'mimeType': mime,
         }
 
         if parent_id:
@@ -404,9 +406,11 @@ class local(object):
         date = date.replace(tzinfo=pytz.UTC)
         us = date.microsecond
         date = date.replace(microsecond=(us - (us % 1000)))
+        mime = magic.from_file(path, mime=True)
 
         return {'fileSize': stats.st_size,
-                'modifiedDate': date}
+                'modifiedDate': date,
+                'mimeType': mime}
 
     def md5sum(self, path, block_size=2**20):
         md5 = hashlib.md5()
@@ -564,7 +568,8 @@ class grind(object):
             folder_id = None
 
         date = self.local.read_file_info(path)['modifiedDate']
-        self.remote.create_file(path, folder_id, date, drive)
+        mime = self.local.read_file_info(path)['mimeType']
+        self.remote.create_file(path, folder_id, date, mime, drive)
 
     def drive_upload_files(self, file_list=None, drive=None):
         logger.info("uploading new files")
