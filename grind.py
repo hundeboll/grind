@@ -139,6 +139,13 @@ class remote_file(object):
     def modified_date(self):
         return dateutil.parser.parse(self.info['modifiedDate'])
 
+class local_file(object):
+    def __init__(self, path):
+        self.path = path
+        self.read_info()
+
+    def read_info(self):
+
 class remote(object):
     backoff_time = 1
     file_index = {}
@@ -350,7 +357,7 @@ class remote(object):
         self.upload_size += int(file_info['fileSize'])
         self.upload_count += 1
 
-    def update_file(self, path, date, drive=None):
+    def update_file(self, path, date, mime, drive=None):
         logger.debug("updating file: " + path)
         if not drive:
             drive = self.drive
@@ -358,10 +365,11 @@ class remote(object):
         file_id = self.file_paths[path].id
         date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         path = os.path.join(self.path, path)
-        media_body = MediaFileUpload(path, resumable=True)
+        media_body = MediaFileUpload(path, mimetype=mime, resumable=True)
 
         body = {
                 'modifiedDate': date,
+                'mimeType': mime,
         }
 
         while True:
@@ -442,16 +450,6 @@ class local(object):
 
     def read_file_info(self, path):
         path = os.path.join(self.path, path)
-        stats = os.stat(path)
-        date = datetime.datetime.fromtimestamp(stats.st_ctime)
-        date = date.replace(tzinfo=pytz.UTC)
-        us = date.microsecond
-        date = date.replace(microsecond=(us - (us % 1000)))
-        mime = magic.from_file(path, mime=True)
-
-        return {'fileSize': stats.st_size,
-                'modifiedDate': date,
-                'mimeType': mime}
 
     def md5sum(self, path, block_size=2**20):
         md5 = hashlib.md5()
@@ -649,8 +647,9 @@ class grind(object):
             drive = self.drive
 
         for path in file_list:
+            mime = self.local.read_file_info(path)['mimeType']
             date = self.local.read_file_info(path)['modifiedDate']
-            self.remote.update_file(path, date, drive)
+            self.remote.update_file(path, date, mime, drive)
 
         self.threads_done += 1
         logger.debug("update thread done")
