@@ -97,50 +97,21 @@ formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)s: %(message)s')
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-class drive_push(object):
-    fields = ['createdDate',
-              'downloadUrl',
-              'fileExtension',
-              'fileSize',
-              'id',
-              'kind',
-              'md5Checksum',
-              'mimeType',
-              'modifiedByMeDate',
-              'modifiedDate',
-              'originalFilename',
-              'title',
-              'parents(id,isRoot)']
-
+class remote(object):
     backoff_time = 1
-    stop = False
-    https = []
-    threads_running = 0
-    threads_done = 0
-
-    drive_index = {}
-    drive_paths = {}
-    drive_items = []
-    drive_folders = {}
-    drive_total_size = 0
-    drive_upload_size = 0
-    drive_upload_count = 0
-    drive_update_size = 0
-    drive_update_count = 0
-
-    local_changed_files = {}
-    local_new_files = {}
-    local_meta_files = {}
-    local_total_size = 0
-    local_changed_size = 0
-    local_new_size = 0
-    local_unchanged_files = {}
-    local_unchanged_size = 0
+    file_index = {}
+    file_paths = {}
+    file_items = []
+    folder_index = {}
+    total_size = 0
+    upload_size = 0
+    upload_count = 0
+    update_size = 0
+    update_count = 0
 
     def __init__(self, args):
         self.cred_path = args.credentials
         self.path = args.path + '/'
-        self.threads = args.threads
 
         if os.path.isfile(self.cred_path):
             self.authenticate_saved()
@@ -202,87 +173,38 @@ class drive_push(object):
 
         return drive
 
-    def update_progress(self):
-        total_bytes = self.local_new_size + self.local_changed_size
-        status_bytes = self.drive_upload_size
-        total_count = len(self.local_new_files) + len(self.local_changed_files)
-        status_count = self.drive_upload_count + self.drive_update_count
-        total_size,unit = self.scale_bytes(total_bytes)
-        status_size,unit = self.scale_bytes(status_bytes, unit)
-        progress_count = float(status_bytes) / float(total_bytes)
-        progress_str = '#' * int(progress_count*10)
+    def get_file_list(self):
+        fields = ['createdDate',
+                  'downloadUrl',
+                  'fileExtension',
+                  'fileSize',
+                  'id',
+                  'kind',
+                  'md5Checksum',
+                  'mimeType',
+                  'modifiedByMeDate',
+                  'modifiedDate',
+                  'originalFilename',
+                  'title',
+                  'parents(id,isRoot)']
 
-        progress_string = ' [{0:10}] {1:>2}%'
-        string = progress_string.format(progress_str, round(progress_count*100, 2))
-        string += " {}/{} files".format(status_count, total_count)
-        string += " {}/{} {}".format(status_size, total_size, unit)
-        string += "\r"
-
-        sys.stdout.write(string)
-        sys.stdout.flush()
-
-    def print_summary(self):
-        count = len(self.local_new_files)
-        size,unit = self.scale_bytes(self.local_new_size)
-        logger.info('files new: {} ({} {})'.format(count, size, unit))
-
-        count = len(self.local_changed_files)
-        size,unit = self.scale_bytes(self.local_changed_size)
-        logger.info('files changed: {} ({} {})'.format(count, size, unit))
-
-        count = len(self.local_meta_files)
-        logger.info('files meta changed: {}'.format(count))
-
-        count = len(self.local_unchanged_files)
-        size,unit = self.scale_bytes(self.local_unchanged_size)
-        logger.info('files unchanged: {} ({} {})'.format(count, size, unit))
-
-    def scale_bytes(self, bytes_, fixed=None):
-        for s,u in ((30,'GB'), (20,'MB'), (10,'kB'), (0,'B')):
-            r = bytes_ >> s
-            if not r and fixed != u:
-                continue
-
-            if s:
-                r += (bytes_ - (r << s) >> (s - 10))/1024.0
-
-            return round(r, 2),u
-
-        return 0,'B'
-
-    def local_md5sum(self, path, block_size=2**20):
-        md5 = hashlib.md5()
-        path = os.path.join(self.path, path)
-        f = open(path, 'rb')
-
-        while True:
-            data = f.read(block_size)
-
-            if not data:
-                break
-
-            md5.update(data)
-
-        return md5.hexdigest()
-
-    def drive_get_files(self):
         page_token = None
 
         while True:
             try:
                 param = {'q': 'trashed=false',
                          'maxResults': 1000,
-                         'fields': 'items(' + ','.join(self.fields) + '),nextPageToken'}
-                logger.info("resolving drive files ({} files received)".format(len(self.drive_items)))
+                         'fields': 'items(' + ','.join(fields) + '),nextPageToken'}
+                logger.info("resolving drive files ({} files received)".format(len(self.file_items)))
 
                 if page_token:
                     param['pageToken'] = page_token
 
                 files = self.drive.files().list(**param).execute()
 
-                self.drive_items.extend(files['items'])
+                self.file_items.extend(files['items'])
                 page_token = files.get('nextPageToken')
-                self.backoff_time = 0
+                self.backoff_time = 1
 
                 if not page_token:
                     break
@@ -291,34 +213,34 @@ class drive_push(object):
                 time.sleep(self.backoff_time)
                 self.backoff_time *= 2
 
-        logger.info('resolved {} files/folders'.format(len(self.drive_items)))
+        logger.info('resolved {} files/folders'.format(len(self.file_items)))
 
-    def drive_build_tree(self):
+    def build_tree(self):
         logger.info('building drive tree')
 
-        for file_info in self.drive_items:
-            self.drive_index[file_info['id']] = file_info
+        for file_info in self.file_items:
+            self.file_index[file_info['id']] = file_info
 
-        for file_info in self.drive_items:
+        for file_info in self.file_items:
             title = file_info['title']
 
             if file_info['mimeType'] == 'application/vnd.google-apps.folder':
-                if title in self.drive_folders:
+                if title in self.folder_index:
                     logger.warning('duplicate folder name: ' + title)
 
-                self.drive_folders[title] = file_info
+                self.folder_index[title] = file_info
                 continue
 
-            path = self.drive_recurse_tree(file_info)
+            path = self.recurse_tree(file_info)
 
-            if path in self.drive_paths:
+            if path in self.file_paths:
                 logger.warning('duplicate file path: ' + path)
 
-            self.drive_paths[path] = file_info
-            self.drive_total_size += int(file_info.get('fileSize', 0))
+            self.file_paths[path] = file_info
+            self.total_size += int(file_info.get('fileSize', 0))
             logger.debug("drive file: " + path)
 
-    def drive_recurse_tree(self, file_info, path = None):
+    def recurse_tree(self, file_info, path = None):
         if path:
             path = os.path.join(file_info['title'], path)
         else:
@@ -331,74 +253,11 @@ class drive_push(object):
             return path
 
         parent_id = file_info['parents'][0]['id']
-        parent = self.drive_index[parent_id]
+        parent = self.file_index[parent_id]
 
-        return self.drive_recurse_tree(parent, path)
+        return self.recurse_tree(parent, path)
 
-    def local_get_files(self):
-        logger.info("resolving local files")
-
-        for root, dirs, files in os.walk(self.path):
-            files = [f for f in files if not f[0] == '.']
-            dirs[:] = [d for d in dirs if not d[0] == '.']
-
-            for f in files:
-                path = os.path.join(root, f)
-                path = path[len(self.path):]
-                info = self.local_read_info(path)
-                self.local_total_size += info['fileSize']
-
-                if path not in self.drive_paths:
-                    logger.debug("local new: " + path)
-                    self.local_new_files[path] = info
-                    self.local_new_size += info['fileSize']
-                elif self.local_file_is_changed(path, info, checksum=True):
-                    logger.debug("local changed: " + path)
-                    self.local_changed_files[path] = info
-                    self.local_changed_size += info['fileSize']
-                elif self.local_file_is_changed(path, info, checksum=False):
-                    logger.debug("local meta changed: " + path)
-                    self.local_meta_files[path] = info
-                else:
-                    logger.debug("local unchanged: " + path)
-                    self.local_unchanged_files[path] = info
-                    self.local_unchanged_size += info['fileSize']
-
-        self.local_new_files = sorted(self.local_new_files)
-        self.local_changed_files = sorted(self.local_changed_files)
-
-    def local_read_info(self, path):
-        path = os.path.join(self.path, path)
-        stats = os.stat(path)
-        date = datetime.datetime.fromtimestamp(stats.st_ctime)
-        date = date.replace(tzinfo=pytz.UTC)
-        us = date.microsecond
-        date = date.replace(microsecond=(us - (us % 1000)))
-
-        return {'fileSize': stats.st_size,
-                'modifiedDate': date}
-
-    def local_file_is_changed(self, path, local_info, checksum=False):
-        if path not in self.drive_paths:
-            return True
-
-        drive_info = self.drive_paths[path]
-        drive_date = dateutil.parser.parse(drive_info['modifiedDate'])
-        drive_size = int(drive_info['fileSize'])
-        drive_md5 = drive_info['md5Checksum']
-
-        local_date = local_info['modifiedDate']
-        local_size = local_info['fileSize']
-
-        if (local_date != drive_date or local_size != drive_size) and checksum:
-            return drive_md5 != self.local_md5sum(path)
-
-        if (local_date != drive_date or local_size != drive_size) and not checksum:
-            return True
-
-        return False
-
-    def drive_create_folder(self, folder_name, parent_id = None):
+    def create_folder(self, folder_name, parent_id = None):
         logger.debug('creating folder: ' + folder_name)
         body = {
                 'title': folder_name,
@@ -409,34 +268,15 @@ class drive_push(object):
             body['parents'] = [{'id': parent_id}]
 
         new_folder = self.drive.files().insert(body = body).execute()
-        self.drive_folders[folder_name] = new_folder
+        self.folder_index[folder_name] = new_folder
 
         return new_folder['id']
 
-    def drive_create_path(self, path):
-        folders,filename = os.path.split(path)
-        parent_id = None
-
-        if not folders:
-            return
-
-        for folder in folders.split(os.sep):
-            if folder not in self.drive_folders:
-                parent_id = self.drive_create_folder(folder, parent_id)
-            else:
-                parent_id = self.drive_folders[folder]['id']
-
-    def drive_create_paths(self):
-        logger.info("creating directories")
-        for path in self.local_new_files:
-            self.drive_create_path(path)
-
-    def drive_create_file(self, path, parent_id, drive=None):
+    def create_file(self, path, parent_id, date, drive=None):
         if not drive:
             drive = self.drive
 
         logger.debug('creating file: ' + path)
-        date = self.local_read_info(path)['modifiedDate']
         date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         path = os.path.join(self.path, path)
         media_body = MediaFileUpload(path, resumable=True)
@@ -463,88 +303,16 @@ class drive_push(object):
                 logger.debug("upload interrupted {}".format(e))
                 return
 
-        self.backoff_time = 0
-        self.drive_upload_size += int(file_info['fileSize'])
-        self.drive_upload_count += 1
+        self.backoff_time = 1
+        self.upload_size += int(file_info['fileSize'])
+        self.upload_count += 1
 
-    def drive_upload_file(self, path, drive=None):
-        if not drive:
-            drive = self.drive
-        folder_path,file_name = os.path.split(path)
-
-        if folder_path:
-            folder_parent = os.path.basename(folder_path)
-            folder_info = self.drive_folders[folder_parent]
-            folder_id = folder_info['id']
-        else:
-            folder_id = None
-
-        self.drive_create_file(path, folder_id, drive)
-
-    def drive_upload_files(self, file_list=None, drive=None):
-        logger.info("uploading new files")
-        if not file_list:
-            file_list = self.local_new_files
-
-        if not drive:
-            drive = self.drive
-
-        for path in file_list:
-            self.drive_upload_file(path, drive)
-            if self.stop:
-                break
-
-        self.threads_done += 1
-        logger.debug("upload thread done")
-
-    def drive_meta_update_file(self, path, drive=None):
-        logger.debug("updating file meta: " + path)
-        if not drive:
-            drive = self.drive
-
-        file_id = self.drive_paths[path]['id']
-        date = self.local_read_info(path)['modifiedDate']
-        date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        info = {'modifiedDate': date}
-
-        while True:
-            try:
-                # Rename the file.
-                updated_file = drive.files().patch(
-                    fileId=file_id,
-                    body=info,
-                    setModifiedDate=True,
-                    fields='modifiedDate').execute()
-                break
-            except errors.HttpError as e:
-                logger.error('update failed: {}'.format(e))
-                time.sleep(self.backoff_time)
-                self.backoff_time *= 2
-            except (socket.error, BadStatusLine) as e:
-                logger.debug("update interrupted {}".format(e))
-                return
-
-    def drive_meta_update_files(self, file_list=None, drive=None):
-        logger.info("updating meta changed files")
-        if not file_list:
-            file_list = self.local_meta_files
-
-        if not drive:
-            drive = self.drive
-
-        for path in file_list:
-            self.drive_meta_update_file(path, drive)
-
-        self.threads_done += 1
-        logger.debug("meta update thread done")
-
-    def drive_update_file(self, path, drive=None):
+    def update_file(self, path, date, drive=None):
         logger.debug("updating file: " + path)
         if not drive:
             drive = self.drive
 
-        file_id = self.drive_paths[path]['id']
-        date = self.local_read_info(path)['modifiedDate']
+        file_id = self.file_paths[path]['id']
         date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         path = os.path.join(self.path, path)
         media_body = MediaFileUpload(path, resumable=True)
@@ -568,20 +336,278 @@ class drive_push(object):
                 logger.debug("upload interrupted {}".format(e))
                 return
 
-        self.backoff_time = 0
-        self.drive_update_size += int(file_info['fileSize'])
-        self.drive_update_count += 1
+        self.backoff_time = 1
+        self.update_size += int(file_info['fileSize'])
+        self.update_count += 1
 
-    def drive_update_files(self, file_list=None, drive=None):
-        logger.info("updating changed files")
+    def meta_update_file(self, path, date, drive=None):
+        logger.debug("updating file meta: " + path)
+        if not drive:
+            drive = self.drive
+
+        file_id = self.file_paths[path]['id']
+        date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        info = {'modifiedDate': date}
+
+        while True:
+            try:
+                # Rename the file.
+                updated_file = drive.files().patch(
+                    fileId=file_id,
+                    body=info,
+                    setModifiedDate=True,
+                    fields='modifiedDate').execute()
+                break
+            except errors.HttpError as e:
+                logger.error('update failed: {}'.format(e))
+                time.sleep(self.backoff_time)
+                self.backoff_time *= 2
+            except (socket.error, BadStatusLine) as e:
+                logger.debug("update interrupted {}".format(e))
+                return
+
+        self.backoff_time = 1
+
+class local(object):
+    file_paths = []
+    changed_files = {}
+    new_files = {}
+    meta_files = {}
+    total_size = 0
+    changed_size = 0
+    new_size = 0
+    unchanged_files = {}
+    unchanged_size = 0
+
+    def __init__(self, args):
+        self.args = args
+        self.path = args.path + '/'
+
+    def read_file_list(self):
+        logger.info("resolving local files")
+
+        for root, dirs, files in os.walk(self.path):
+            files = [f for f in files if not f[0] == '.']
+            dirs[:] = [d for d in dirs if not d[0] == '.']
+
+            for f in files:
+                path = os.path.join(root, f)
+                path = path[len(self.path):]
+                info = self.read_file_info(path)
+                self.total_size += info['fileSize']
+                self.file_paths.append(path)
+
+    def read_file_info(self, path):
+        path = os.path.join(self.path, path)
+        stats = os.stat(path)
+        date = datetime.datetime.fromtimestamp(stats.st_ctime)
+        date = date.replace(tzinfo=pytz.UTC)
+        us = date.microsecond
+        date = date.replace(microsecond=(us - (us % 1000)))
+
+        return {'fileSize': stats.st_size,
+                'modifiedDate': date}
+
+    def md5sum(self, path, block_size=2**20):
+        md5 = hashlib.md5()
+        path = os.path.join(self.path, path)
+        f = open(path, 'rb')
+
+        while True:
+            data = f.read(block_size)
+
+            if not data:
+                break
+
+            md5.update(data)
+
+        return md5.hexdigest()
+
+class grind(object):
+    stop = False
+    https = []
+    threads_running = 0
+    threads_done = 0
+
+    def __init__(self, args):
+        self.threads = args.threads
+        self.remote = remote(args)
+        self.local = local(args)
+
+        self.remote.get_file_list()
+        self.remote.build_tree()
+
+        self.local.read_file_list()
+
+        self.compare_files()
+        self.print_summary()
+
+    def update_progress(self):
+        total_bytes = self.local.new_size + self.local.changed_size
+        status_bytes = self.remote.upload_size
+        total_count = len(self.local.new_files) + len(self.local.changed_files)
+        status_count = self.remote.upload_count + self.remote.update_count
+        total_size,unit = self.scale_bytes(total_bytes)
+        status_size,unit = self.scale_bytes(status_bytes, unit)
+        progress_count = float(status_bytes) / float(total_bytes)
+        progress_str = '#' * int(progress_count*10)
+
+        progress_string = ' [{0:10}] {1:>2}%'
+        string = progress_string.format(progress_str, round(progress_count*100, 2))
+        string += " {}/{} files".format(status_count, total_count)
+        string += " {}/{} {}".format(status_size, total_size, unit)
+        string += "\r"
+
+        sys.stdout.write(string)
+        sys.stdout.flush()
+
+    def print_summary(self):
+        count = len(self.local.new_files)
+        size,unit = self.scale_bytes(self.local.new_size)
+        logger.info('files new: {} ({} {})'.format(count, size, unit))
+
+        count = len(self.local.changed_files)
+        size,unit = self.scale_bytes(self.local.changed_size)
+        logger.info('files changed: {} ({} {})'.format(count, size, unit))
+
+        count = len(self.local.meta_files)
+        logger.info('files meta changed: {}'.format(count))
+
+        count = len(self.local.unchanged_files)
+        size,unit = self.scale_bytes(self.local.unchanged_size)
+        logger.info('files unchanged: {} ({} {})'.format(count, size, unit))
+
+    def scale_bytes(self, bytes_, fixed=None):
+        for s,u in ((30,'GB'), (20,'MB'), (10,'kB'), (0,'B')):
+            r = bytes_ >> s
+            if not r and fixed != u:
+                continue
+
+            if s:
+                r += (bytes_ - (r << s) >> (s - 10))/1024.0
+
+            return round(r, 2),u
+
+        return 0,'B'
+
+    def compare_files(self):
+        for path in self.local.file_paths:
+            info = self.local.read_file_info(path)
+
+            if path not in self.remote.file_paths:
+                logger.debug("local new: " + path)
+                self.local.new_files[path] = info
+                self.local.new_size += info['fileSize']
+            elif self.file_is_changed(path, info, checksum=True):
+                logger.debug("local changed: " + path)
+                self.local.changed_files[path] = info
+                self.local.changed_size += info['fileSize']
+            elif self.file_is_changed(path, info, checksum=False):
+                logger.debug("local meta changed: " + path)
+                self.local.meta_files[path] = info
+            else:
+                logger.debug("local unchanged: " + path)
+                self.local.unchanged_files[path] = info
+                self.local.unchanged_size += info['fileSize']
+
+        self.local.new_files = sorted(self.local.new_files)
+        self.local.changed_files = sorted(self.local.changed_files)
+
+    def file_is_changed(self, path, local_info, checksum=False):
+        if path not in self.remote.file_paths:
+            return True
+
+        drive_info = self.remote.file_paths[path]
+        drive_date = dateutil.parser.parse(drive_info['modifiedDate'])
+        drive_size = int(drive_info['fileSize'])
+        drive_md5 = drive_info['md5Checksum']
+
+        local_date = local_info['modifiedDate']
+        local_size = local_info['fileSize']
+
+        if (local_date != drive_date or local_size != drive_size) and checksum:
+            return drive_md5 != self.local.md5sum(path)
+
+        if (local_date != drive_date or local_size != drive_size) and not checksum:
+            return True
+
+        return False
+
+    def drive_create_path(self, path):
+        folders,filename = os.path.split(path)
+        parent_id = None
+
+        if not folders:
+            return
+
+        for folder in folders.split(os.sep):
+            if folder not in self.remote.folder_index:
+                parent_id = self.remote.create_folder(folder, parent_id)
+            else:
+                parent_id = self.remote.folder_index[folder]['id']
+
+    def drive_create_paths(self):
+        logger.info("creating directories")
+        for path in self.local.new_files:
+            self.drive_create_path(path)
+
+    def drive_upload_file(self, path, drive=None):
+        if not drive:
+            drive = self.drive
+        folder_path,file_name = os.path.split(path)
+
+        if folder_path:
+            folder_parent = os.path.basename(folder_path)
+            folder_info = self.remote.folder_index[folder_parent]
+            folder_id = folder_info['id']
+        else:
+            folder_id = None
+
+        date = self.local.read_file_info(path)['modifiedDate']
+        self.remote.create_file(path, folder_id, date, drive)
+
+    def drive_upload_files(self, file_list=None, drive=None):
+        logger.info("uploading new files")
         if not file_list:
-            file_list = self.local_changed_files
+            file_list = self.local.new_files
 
         if not drive:
             drive = self.drive
 
         for path in file_list:
-            self.drive_update_file(path, drive)
+            self.drive_upload_file(path, drive)
+            if self.stop:
+                break
+
+        self.threads_done += 1
+        logger.debug("upload thread done")
+
+    def drive_meta_update_files(self, file_list=None, drive=None):
+        logger.info("updating meta changed files")
+        if not file_list:
+            file_list = self.local.meta_files
+
+        if not drive:
+            drive = self.drive
+
+        for path in file_list:
+            date = self.local.read_file_info(path)['modifiedDate']
+            self.remote.meta_update_file(path, date, drive)
+
+        self.threads_done += 1
+        logger.debug("meta update thread done")
+
+    def drive_update_files(self, file_list=None, drive=None):
+        logger.info("updating changed files")
+        if not file_list:
+            file_list = self.local.changed_files
+
+        if not drive:
+            drive = self.drive
+
+        for path in file_list:
+            date = self.local.read_file_info(path)['modifiedDate']
+            self.remote.update_file(path, date, drive)
 
         self.threads_done += 1
         logger.debug("update thread done")
@@ -596,19 +622,19 @@ class drive_push(object):
                     conn.sock.close()
 
     def start_meta_update_thread(self):
-        http = self.authorize()
+        http = self.remote.authorize()
         self.https.append(http)
-        drive = self.create_drive(http)
-        l = self.local_meta_files
+        drive = self.remote.create_drive(http)
+        l = self.local.meta_files
         t = threading.Thread(target=self.drive_meta_update_files, args=[l, drive])
         t.start()
         self.threads_running += 1
 
     def start_update_thread(self):
-        http = self.authorize()
+        http = self.remote.authorize()
         self.https.append(http)
-        drive = self.create_drive(http)
-        l = self.local_changed_files
+        drive = self.remote.create_drive(http)
+        l = self.local.changed_files
         t = threading.Thread(target=self.drive_update_files, args=[l, drive])
         t.start()
         self.threads_running += 1
@@ -618,11 +644,11 @@ class drive_push(object):
         self.https = []
 
         for i in range(n):
-            http = self.authorize()
+            http = self.remote.authorize()
             self.https.append(http)
-            drive = self.create_drive(http)
+            drive = self.remote.create_drive(http)
 
-            l = self.local_new_files[i::n]
+            l = self.local.new_files[i::n]
             t = threading.Thread(target=self.drive_upload_files, args=[l, drive])
             t.start()
             self.threads_running += 1
@@ -642,24 +668,20 @@ if __name__ == "__main__":
         logger.setLevel(logging.DEBUG)
 
     try:
-        d = drive_push(args)
-        d.drive_get_files()
-        d.drive_build_tree()
-        d.local_get_files()
-        d.print_summary()
+        g = grind(args)
 
         if args.resolve:
             sys.exit(0)
 
         if not args.disable_meta:
-            d.start_meta_update_thread()
+            g.start_meta_update_thread()
 
         if not args.disable_update:
-            d.start_update_thread()
+            g.start_update_thread()
 
         if not args.disable_upload:
-            d.drive_create_paths()
-            d.start_upload_threads()
+            g.drive_create_paths()
+            g.start_upload_threads()
     except KeyboardInterrupt:
         logger.info("interrupted")
-        d.kill_threads()
+        g.kill_threads()
