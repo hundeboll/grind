@@ -408,7 +408,10 @@ class remote(object):
 
         logger.debug('creating file: ' + local_info.path)
 
-        media_body = MediaFileUpload(local_info.full_path, mimetype=local_info.mime, resumable=True)
+        if local_info.size:
+            media_body = MediaFileUpload(local_info.full_path, mimetype=local_info.mime, resumable=True)
+        else:
+            media_body = None
 
         body = {
                 'title': local_info.title,
