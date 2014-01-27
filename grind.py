@@ -37,6 +37,7 @@ import threading
 import datetime
 import argparse
 import httplib2
+import operator
 import hashlib
 import logging
 import socket
@@ -140,11 +141,83 @@ class remote_file(object):
         return dateutil.parser.parse(self.info['modifiedDate'])
 
 class local_file(object):
-    def __init__(self, path):
-        self.path = path
-        self.read_info()
+    def __init__(self, prefix, path):
+        self.__path = path
+        self.__full_path = os.path.join(prefix, path)
 
-    def read_info(self):
+        stats = os.stat(self.__full_path)
+        date = datetime.datetime.fromtimestamp(stats.st_ctime)
+        date = date.replace(tzinfo=pytz.UTC)
+        us = date.microsecond
+        date = date.replace(microsecond=(us - (us % 1000)))
+        mime = magic.from_file(self.__full_path, mime=True)
+
+        self.__folders,self.__title = os.path.split(path)
+        self.__date = date
+        self.__date_str = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        self.__size = stats.st_size
+        self.__mime = mime
+        self.__md5 = None
+
+    @property
+    def title(self):
+        return self.__title
+
+    @property
+    def path(self):
+        return self.__path
+
+    @property
+    def full_path(self):
+        return self.__full_path
+
+    @property
+    def folders(self):
+        if self.__folders:
+            return self.__folders.split(os.sep)
+        else:
+            return None
+
+    @property
+    def parent(self):
+        return self.__folders
+
+    @property
+    def size(self):
+        return self.__size
+
+    @property
+    def modified_date(self):
+        return self.__date
+
+    @property
+    def date_str(self):
+        return self.__date_str
+
+    @property
+    def mime(self):
+        return self.__mime
+
+    @property
+    def md5sum(self):
+        if self.__md5:
+            return self.__md5
+
+        md5 = hashlib.md5()
+        f = open(self.__full_path, 'rb')
+        block_size = 2**20
+
+        while True:
+            data = f.read(block_size)
+
+            if not data:
+                break
+
+            md5.update(data)
+
+        self.__md5 = md5.hexdigest()
+
+        return self.__md5
 
 class remote(object):
     backoff_time = 1
@@ -152,6 +225,7 @@ class remote(object):
     file_paths = {}
     file_items = []
     folder_index = {}
+    folder_paths = {}
     total_size = 0
     upload_size = 0
     upload_count = 0
@@ -272,19 +346,20 @@ class remote(object):
             self.file_index[info.id] = info
 
         for info in self.file_items:
+            path = self.recurse_tree(info)
+            info.path = path
+
             if info.is_folder:
                 if info.title in self.folder_index:
-                    logger.warning('duplicate folder name: ' + title)
+                    logger.warning('duplicate folder name: ' + info.title)
 
-                self.folder_index[info.title] = info
+                self.folder_index[info.id] = info
+                self.folder_paths[path] = info
                 continue
-
-            path = self.recurse_tree(info)
 
             if path in self.file_paths:
                 logger.warning('duplicate file path: ' + path)
 
-            info.path = path
             self.file_paths[path] = info
             self.total_size += info.size
             logger.debug("drive file: " + path)
@@ -306,38 +381,43 @@ class remote(object):
 
         return self.recurse_tree(parent, path)
 
-    def create_folder(self, folder_name, parent_id = None):
+    def create_folder(self, folder_name, parent_info = None):
         logger.debug('creating folder: ' + folder_name)
         body = {
                 'title': folder_name,
                 'mimeType': "application/vnd.google-apps.folder"
         }
 
-        if parent_id:
-            body['parents'] = [{'id': parent_id}]
+        if parent_info:
+            body['parents'] = [{'id': parent_info.id}]
+            path = os.path.join(parent_info.path, folder_name)
+        else:
+            path = folder_name
 
         new_folder = self.drive.files().insert(body = body).execute()
-        self.folder_index[folder_name] = new_folder
+        info = remote_file(new_folder)
+        info.path = path
+        self.folder_index[info.id] = info
+        self.folder_paths[info.path] = info
 
-        return new_folder['id']
+        return info
 
-    def create_file(self, path, parent_id, date, mime, drive=None):
+    def create_file(self, local_info, parent_info, drive=None):
         if not drive:
             drive = self.drive
 
-        logger.debug('creating file: ' + path)
-        date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        path = os.path.join(self.path, path)
-        media_body = MediaFileUpload(path, mimetype=mime, resumable=True)
+        logger.debug('creating file: ' + local_info.path)
+
+        media_body = MediaFileUpload(local_info.full_path, mimetype=local_info.mime, resumable=True)
 
         body = {
-                'title': os.path.basename(path),
-                'modifiedDate': date,
-                'mimeType': mime,
+                'title': local_info.title,
+                'modifiedDate': local_info.date_str,
+                'mimeType': local_info.mime,
         }
 
-        if parent_id:
-            body['parents'] = [{'id': parent_id}]
+        if parent_info:
+            body['parents'] = [{'id': parent_info.id}]
 
         while True:
             try:
@@ -354,22 +434,20 @@ class remote(object):
                 return
 
         self.backoff_time = 1
-        self.upload_size += int(file_info['fileSize'])
+        self.upload_size += local_info.size
         self.upload_count += 1
 
-    def update_file(self, path, date, mime, drive=None):
-        logger.debug("updating file: " + path)
+    def update_file(self, local_info, drive=None):
+        logger.debug("updating file: " + local_info.path)
         if not drive:
             drive = self.drive
 
-        file_id = self.file_paths[path].id
-        date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        path = os.path.join(self.path, path)
-        media_body = MediaFileUpload(path, mimetype=mime, resumable=True)
+        file_id = self.file_paths[local_info.path].id
+        media_body = MediaFileUpload(local_info.full_path, mimetype=local_info.mime, resumable=True)
 
         body = {
-                'modifiedDate': date,
-                'mimeType': mime,
+                'modifiedDate': local_info.date_str,
+                'mimeType': local_info.mime,
         }
 
         while True:
@@ -388,17 +466,16 @@ class remote(object):
                 return
 
         self.backoff_time = 1
-        self.update_size += int(file_info['fileSize'])
+        self.update_size += local_info.size
         self.update_count += 1
 
-    def meta_update_file(self, path, date, drive=None):
-        logger.debug("updating file meta: " + path)
+    def meta_update_file(self, local_info, drive=None):
+        logger.debug("updating file meta: " + local_info.path)
         if not drive:
             drive = self.drive
 
-        file_id = self.file_paths[path].id
-        date = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        info = {'modifiedDate': date}
+        file_id = self.file_paths[local_info.path].id
+        info = {'modifiedDate': local_info.date_str}
 
         while True:
             try:
@@ -432,39 +509,21 @@ class local(object):
 
     def __init__(self, args):
         self.args = args
-        self.path = args.path + '/'
+        self.prefix = args.path + '/'
 
     def read_file_list(self):
         logger.info("resolving local files")
 
-        for root, dirs, files in os.walk(self.path):
+        for root, dirs, files in os.walk(self.prefix):
             files = [f for f in files if not f[0] == '.']
             dirs[:] = [d for d in dirs if not d[0] == '.']
 
             for f in files:
                 path = os.path.join(root, f)
-                path = path[len(self.path):]
-                info = self.read_file_info(path)
-                self.total_size += info['fileSize']
-                self.file_paths.append(path)
-
-    def read_file_info(self, path):
-        path = os.path.join(self.path, path)
-
-    def md5sum(self, path, block_size=2**20):
-        md5 = hashlib.md5()
-        path = os.path.join(self.path, path)
-        f = open(path, 'rb')
-
-        while True:
-            data = f.read(block_size)
-
-            if not data:
-                break
-
-            md5.update(data)
-
-        return md5.hexdigest()
+                path = path[len(self.prefix):]
+                info = local_file(self.prefix, path)
+                self.total_size += info.size
+                self.file_paths.append(info)
 
 class grind(object):
     stop = False
@@ -534,78 +593,74 @@ class grind(object):
         return 0,'B'
 
     def compare_files(self):
-        for path in self.local.file_paths:
-            info = self.local.read_file_info(path)
+        for info in self.local.file_paths:
 
-            if path not in self.remote.file_paths:
-                logger.debug("local new: " + path)
-                self.local.new_files[path] = info
-                self.local.new_size += info['fileSize']
-            elif self.file_is_changed(path, info, checksum=True):
-                logger.debug("local changed: " + path)
-                self.local.changed_files[path] = info
-                self.local.changed_size += info['fileSize']
-            elif self.file_is_changed(path, info, checksum=False):
-                logger.debug("local meta changed: " + path)
-                self.local.meta_files[path] = info
-            else:
-                logger.debug("local unchanged: " + path)
-                self.local.unchanged_files[path] = info
-                self.local.unchanged_size += info['fileSize']
+            if info.path not in self.remote.file_paths:
+                logger.debug("local new: " + info.path)
+                self.local.new_files[info.path] = info
+                self.local.new_size += info.size
+                continue
 
-        self.local.new_files = sorted(self.local.new_files)
-        self.local.changed_files = sorted(self.local.changed_files)
+            remote_info = self.remote.file_paths[info.path]
 
-    def file_is_changed(self, path, local_info, checksum=False):
-        if path not in self.remote.file_paths:
-            return True
+            if self.file_is_changed(remote_info, info, checksum=True):
+                logger.debug("local changed: " + info.path)
+                self.local.changed_files[info.path] = info
+                self.local.changed_size += info.size
+                continue
 
-        remote_info = self.remote.file_paths[path]
+            if self.file_is_changed(remote_info, info, checksum=False):
+                logger.debug("local meta changed: " + info.path)
+                self.local.meta_files[info.path] = info
+                continue
 
-        local_date = local_info['modifiedDate']
-        local_size = local_info['fileSize']
+            logger.debug("local unchanged: " + info.path)
+            self.local.unchanged_files[info.path] = info
+            self.local.unchanged_size += info.size
 
-        if (local_date != remote_info.modified_date or local_size != remote_info.size) and checksum:
-            return remote_info.md5sum != self.local.md5sum(path)
+        self.local.new_files = sorted(self.local.new_files.iteritems(), key=operator.itemgetter(0))
+        self.local.changed_files = sorted(self.local.changed_files.iteritems(), key=operator.itemgetter(0))
+        self.local.meta_files = sorted(self.local.meta_files.iteritems(), key=operator.itemgetter(0))
 
-        if (local_date != remote_info.modified_date or local_size != remote_info.size) and not checksum:
+    def file_is_changed(self, remote_info, local_info, checksum=False):
+        if (local_info.modified_date != remote_info.modified_date or local_info.size != remote_info.size) and checksum:
+            return remote_info.md5sum != local_info.md5sum
+
+        if (local_info.modified_date != remote_info.modified_date or local_info.size != remote_info.size) and not checksum:
             return True
 
         return False
 
-    def drive_create_path(self, path):
-        folders,filename = os.path.split(path)
-        parent_id = None
+    def drive_create_path(self, local_info):
+        parent_info = None
+        parent_path = ''
 
-        if not folders:
+        if not local_info.folders:
             return
 
-        for folder in folders.split(os.sep):
-            if folder not in self.remote.folder_index:
-                parent_id = self.remote.create_folder(folder, parent_id)
+        for folder in local_info.folders:
+            path = os.path.join(parent_path, folder)
+
+            if path not in self.remote.folder_paths:
+                parent_info = self.remote.create_folder(folder, parent_info)
             else:
-                parent_id = self.remote.folder_index[folder].id
+                parent_info = self.remote.folder_paths[path]
 
     def drive_create_paths(self):
         logger.info("creating directories")
-        for path in self.local.new_files:
-            self.drive_create_path(path)
+        for path,info in self.local.new_files:
+            self.drive_create_path(info)
 
-    def drive_upload_file(self, path, drive=None):
+    def drive_upload_file(self, info, drive=None):
         if not drive:
             drive = self.drive
-        folder_path,file_name = os.path.split(path)
 
-        if folder_path:
-            folder_parent = os.path.basename(folder_path)
-            folder_info = self.remote.folder_index[folder_parent]
-            folder_id = folder_info['id']
+        if info.folders:
+            folder_info = self.remote.folder_paths[info.parent]
         else:
-            folder_id = None
+            folder_info = None
 
-        date = self.local.read_file_info(path)['modifiedDate']
-        mime = self.local.read_file_info(path)['mimeType']
-        self.remote.create_file(path, folder_id, date, mime, drive)
+        self.remote.create_file(info, folder_info, drive)
 
     def drive_upload_files(self, file_list=None, drive=None):
         logger.info("uploading new files")
@@ -615,8 +670,8 @@ class grind(object):
         if not drive:
             drive = self.drive
 
-        for path in file_list:
-            self.drive_upload_file(path, drive)
+        for path,info in file_list:
+            self.drive_upload_file(info, drive)
             if self.stop:
                 break
 
@@ -631,9 +686,8 @@ class grind(object):
         if not drive:
             drive = self.drive
 
-        for path in file_list:
-            date = self.local.read_file_info(path)['modifiedDate']
-            self.remote.meta_update_file(path, date, drive)
+        for path,info in file_list:
+            self.remote.meta_update_file(info, drive)
 
         self.threads_done += 1
         logger.debug("meta update thread done")
@@ -646,10 +700,8 @@ class grind(object):
         if not drive:
             drive = self.drive
 
-        for path in file_list:
-            mime = self.local.read_file_info(path)['mimeType']
-            date = self.local.read_file_info(path)['modifiedDate']
-            self.remote.update_file(path, date, mime, drive)
+        for path,info in file_list:
+            self.remote.update_file(info, drive)
 
         self.threads_done += 1
         logger.debug("update thread done")
