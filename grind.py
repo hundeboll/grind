@@ -754,6 +754,7 @@ class grind(object):
 
 if __name__ == "__main__":
     args = p.parse_args()
+    g = None
 
     if args.verbose:
         logger.setLevel(logging.INFO)
@@ -778,4 +779,5 @@ if __name__ == "__main__":
             g.start_upload_threads()
     except KeyboardInterrupt:
         logger.info("interrupted")
-        g.kill_threads()
+        if g:
+            g.kill_threads()
