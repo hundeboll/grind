@@ -350,8 +350,8 @@ class remote(object):
             info.path = path
 
             if info.is_folder:
-                if info.title in self.folder_index:
-                    logger.warning('duplicate folder name: ' + info.title)
+                if path in self.folder_paths:
+                    logger.warning('duplicate folder name: ' + path)
 
                 self.folder_index[info.id] = info
                 self.folder_paths[path] = info
@@ -382,7 +382,6 @@ class remote(object):
         return self.recurse_tree(parent, path)
 
     def create_folder(self, folder_name, parent_info = None):
-        logger.debug('creating folder: ' + folder_name)
         body = {
                 'title': folder_name,
                 'mimeType': "application/vnd.google-apps.folder"
@@ -394,6 +393,7 @@ class remote(object):
         else:
             path = folder_name
 
+        logger.debug('creating folder: ' + path)
         new_folder = self.drive.files().insert(body = body).execute()
         info = remote_file(new_folder)
         info.path = path
@@ -636,13 +636,13 @@ class grind(object):
 
     def drive_create_path(self, local_info):
         parent_info = None
-        parent_path = ''
+        path = ''
 
         if not local_info.folders:
             return
 
         for folder in local_info.folders:
-            path = os.path.join(parent_path, folder)
+            path = os.path.join(path, folder)
 
             if path not in self.remote.folder_paths:
                 parent_info = self.remote.create_folder(folder, parent_info)
