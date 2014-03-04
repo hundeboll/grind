@@ -43,7 +43,7 @@ import logging
 import socket
 import magic
 import time
-import pytz
+import dateutil.tz
 import sys
 import os
 
@@ -146,15 +146,15 @@ class local_file(object):
         self.__full_path = os.path.join(prefix, path)
 
         stats = os.stat(self.__full_path)
-        date = datetime.datetime.fromtimestamp(stats.st_ctime)
-        date = date.replace(tzinfo=pytz.UTC)
+        date = datetime.datetime.fromtimestamp(stats.st_mtime)
+        date = date.replace(tzinfo=dateutil.tz.tzlocal())
         us = date.microsecond
         date = date.replace(microsecond=(us - (us % 1000)))
         mime = magic.from_file(self.__full_path, mime=True)
 
         self.__folders,self.__title = os.path.split(path)
         self.__date = date
-        self.__date_str = date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        self.__date_str = date.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
         self.__size = stats.st_size
         self.__mime = mime
         self.__md5 = None
