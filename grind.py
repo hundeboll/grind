@@ -737,15 +737,15 @@ class grind(object):
         self.threads_running += 1
 
     def start_upload_threads(self):
-        n = self.threads
+        self.threads = min(len(self.local.new_files), self.threads)
         self.https = []
 
-        for i in range(n):
+        for i in range(self.threads):
             http = self.remote.authorize()
             self.https.append(http)
             drive = self.remote.create_drive(http)
 
-            l = self.local.new_files[i::n]
+            l = self.local.new_files[i::self.threads]
             t = threading.Thread(target=self.drive_upload_files, args=[l, drive])
             t.start()
             self.threads_running += 1
